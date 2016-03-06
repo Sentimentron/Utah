@@ -4,6 +4,12 @@ import pandas
 import numpy as np
 import sys
 
+"""
+aws ec2 describe-spot-price-history --instance-types   c4.large --output text --start-time 2016-02-04 --end-time 2016-03-05 --product-descriptions 'Linux/UNIX (Amazon VPC)' > spot-instance-history.tsv
+
+"""
+
+
 
 import dateutil.parser
 
@@ -40,22 +46,7 @@ with open('spot-instance-history.tsv') as fp:
       _, az, _, _, price, date = line.split('\t')
       date = dateutil.parser.parse(date)
       price = float(price)
-      if az == 'us-east-1e':
-          prices.append((price, date))
-
-current_span = []
-all_spans = []
-for price, date in prices:
-    if price <= 0.026:
-        # Meets the bid 
-        current_span.append(date)
-    elif len(current_span) > 0:
-        all_spans.append((min(current_span), max(current_span)))
-       #  print(all_spans[-1])
-        current_span = []
-
-for min_time, max_time in all_spans:
-    print((max_time - min_time))
+      prices.append((price, date, az))
     
 # OK: now print the actual time we would have been charged for and simulate when the instance would have stopped
 min_time = min(x[1] for x in prices) # Time the spot instance got placed
@@ -65,7 +56,7 @@ delta_hours = delta.total_seconds() / 60 / 60
 
 print(delta_hours)
 
-prices_dict = {d : p for p, d in prices}
+prices_dict_withaz = {(d, a) : p for p, d, a in prices}
 
 # Between our min and max time, calculate what the cost would have been per hour
 hour_prices = {}
@@ -73,16 +64,40 @@ run_status = {}
 total_hours = 0
 partial_hours = 0
 max_bid = float(sys.argv[1])
+current_az = None
 for i in range(int(delta_hours)):
+    
+    i = timedelta(hours=i) + min_time
+    
+    # If we were running before, we have to stay in the same AZ
+    if current_az != None:
+        print(("Retaining", current_az))
+        prices_dict = {d : p for p, d, a in prices if a == current_az}
+    else:
+        # Otherwise, we can price the AZ with the cheapest price at
+        # this point
+        possible_azs = set([d for j, d in prices_dict_withaz])
+        cheapest_az, cheapest_price = None, 100000
+        for az in possible_azs:
+            prices_dict = {d : p for p, d, a in prices if a == az}
+            possible_times = [j for j in prices_dict if j < i]
+            if len(possible_times) == 0:
+                continue
+            possible_time = max(possible_times)
+            price = prices_dict[possible_time]
+            if price < cheapest_price:
+                cheapest_az = az
+                cheapest_price = price 
+                print(("Cheapest AZ is now", cheapest_az))
+         
+        current_az = cheapest_az
+        prices_dict = {d : p for p, d, a in prices if a == current_az}        
     
     # Retrieve a list of dates that are in between this 
     # and the next hour
-    i = timedelta(hours=i) + min_time
     max_hour_time = i + timedelta(hours=1)
     quoted_times = [j for j in prices_dict if j < max_hour_time and j >= i]
-    
-    print((i, len(quoted_times)))
-    
+        
     # Find the date that's closest to this time, but is before to set
     # the "price per hour"
     possible_times = [j for j in prices_dict if j < i]
@@ -90,17 +105,20 @@ for i in range(int(delta_hours)):
         continue
     possible_time = max(possible_times)
     hour_prices[i] = prices_dict[possible_time]
+    print((i, len(quoted_times)), str(possible_time), prices_dict[possible_time])
     run_status[i] = timedelta(hours=1)
     total_hours += 1
     
     
     # If the price of one of those times is greater than our bid...
     for q in sorted(quoted_times):
-        if prices_dict[q] >= max_bid:
+        if prices_dict[q] > max_bid:
             hour_prices[i] = 0.0 # Not charged for a partial hour
             run_status[i] = q-i
             partial_hours += 1
             total_hours -= 1
+            current_az = None
+            print(("Able to run for", str(q - i)))
             break
             
     
