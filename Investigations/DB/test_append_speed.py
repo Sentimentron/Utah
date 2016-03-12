@@ -15,6 +15,9 @@ if __name__ == "__main__":
     logging.info("Creating database tables...")
     db.query(r"""CREATE TABLE inverted (packid serial, keyword integer, words integer[])""")
 
+    db.query(r"""CREATE INDEX keyword_index ON inverted USING BTREE
+    (keyword)""")
+
     # Keep a count of how many things we've inserted
     counts = {(i+1) : 0 for i in range(10)}
     def total_count():
